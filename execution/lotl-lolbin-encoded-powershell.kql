@@ -1,0 +1,38 @@
+// Threat Hunt: LOLBin & Encoded PowerShell Execution
+// Platform: Microsoft Defender XDR (DeviceProcessEvents)
+// MITRE ATT&CK: T1059.001 (PowerShell), T1027 (Obfuscated Files or Information)
+
+let Lookback = 7d;
+let SuspiciousParents = dynamic([
+    "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    "mshta.exe", "wscript.exe", "cscript.exe", "cmd.exe",
+    "rundll32.exe", "regsvr32.exe", "wmiprvse.exe"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe", "pwsh.exe")
+| extend
+    CmdLower = tolower(ProcessCommandLine),
+    ParentLower = tolower(InitiatingProcessFileName)
+| extend
+    HasEncodedFlag = CmdLower matches regex @"(?i)(?:^|\s)[-/](?:e|ec|en|enc|enco|encod|encodedcommand)\s+[A-Za-z0-9+/=]{16,}",
+    HasHiddenWindow = CmdLower matches regex @"(?i)(?:^|\s)[-/]w(?:indowstyle)?\s+hid(?:den)?\b",
+    HasDownloadCradle = CmdLower has_any ("downloadstring", "downloadfile", "invoke-webrequest", "invoke-restmethod", "net.webclient", "frombase64string", "iex(", "iex "),
+    HasSuspiciousParent = ParentLower in (SuspiciousParents)
+| where HasEncodedFlag or (HasHiddenWindow and HasDownloadCradle) or (HasSuspiciousParent and (HasDownloadCradle or HasHiddenWindow))
+| project
+    Timestamp,
+    DeviceName,
+    AccountDomain,
+    AccountName,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    FileName,
+    ProcessCommandLine,
+    HasEncodedFlag,
+    HasHiddenWindow,
+    HasDownloadCradle,
+    HasSuspiciousParent,
+    ProcessId,
+    SHA256
+| sort by Timestamp desc
