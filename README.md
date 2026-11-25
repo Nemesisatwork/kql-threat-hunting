@@ -19,7 +19,6 @@ Every query in this repository is built to be **readable, modular, and simple to
 ```text
 .
 ├── .github/
-│   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       └── validate.yml          # Automated metadata & KQL syntax checks
 ├── docs/
@@ -38,18 +37,3 @@ Every query in this repository is built to be **readable, modular, and simple to
 | --- | --- | --- | --- | --- |
 | `TH-KQL-0001` | Execution | `T1059.001`, `T1027` | Microsoft Defender XDR | [LOLBin & Encoded PowerShell Execution](execution/lotl-lolbin-encoded-powershell.md) |
 | `TH-KQL-0002` | Initial Access | `T1528`, `T1550.001` | Microsoft Sentinel | [Suspicious OAuth Application Consent Grants](initial-access/suspicious-oauth-app-consent.md) |
-
----
-
-## Adding a New Hunt
-
-1. Pick or create the matching MITRE ATT&CK tactic folder (lowercase kebab-case, e.g., `credential-access/`).
-2. Create `<hunt-slug>.kql` with modular `let` parameters at the top and clean `//` section comments (no Markdown code fences).
-3. Copy [`docs/HUNT_TEMPLATE.md`](docs/HUNT_TEMPLATE.md) to `<hunt-slug>.md` in the same folder and complete all sections.
-4. Validate locally before committing:
-
-```bash
-python scripts/validate_hunts.py --summary
-```
-
-GitHub Actions automatically runs `validate_hunts.py` on every push and pull request.
