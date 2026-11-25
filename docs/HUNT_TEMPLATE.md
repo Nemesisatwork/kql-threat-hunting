@@ -18,14 +18,22 @@ query_file: <hunt-slug>.kql
 # <Concise Hunt Title>
 
 ## Hypothesis
-State a clear, falsifiable threat hunting hypothesis. What adversary behavior are you looking for, and why would standard alerts miss it?
+Explain the threat in plain, everyday security terms so anyone reading can immediately understand:
+- **What is happening:** Describe the attacker's goal and technique without heavy jargon.
+- **Why it blends in / why alerts miss it:** Explain how this behavior looks similar to normal IT or admin activity.
 
 ## Telemetry & Data Sources
 - **Platform / Schema:** List the tables (`DeviceProcessEvents`, `AuditLogs`, `SigninLogs`, etc.) required.
 - **Prerequisites:** Mention required Defender onboarding, Sentinel connectors, or diagnostic settings.
 
 ## Query Logic
-Briefly walk through how the query filters baseline noise, parses fields, and surfaces anomalies.
+Break down the modular sections of the `.kql` file:
+1. **Tunable Parameters (`let` statements):** Time window, thresholds, and environment allowlists.
+2. **Core Signal & Enrichment:** How raw logs are filtered and labeled into clear risk indicators.
+3. **Output:** Clean, analyst-ready columns sorted for quick review.
+
+### How to Adapt This Query
+- List the exact `let` variables (e.g., `Lookback`, `AllowedAccounts`, `AllowedParents`) a reader can edit to fit their environment without touching the core detection logic.
 
 ## Triage & Investigation Steps
 1. Verify process lineage, user context, or Entra ID identity details.

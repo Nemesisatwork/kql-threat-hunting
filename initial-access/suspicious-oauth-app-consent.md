@@ -19,24 +19,31 @@ query_file: suspicious-oauth-app-consent.kql
 # Suspicious OAuth Application Consent Grants
 
 ## Hypothesis
-Threat actors conduct illicit OAuth consent phishing to trick users or admins into granting third-party Entra ID applications persistent access to mailboxes (`Mail.Read*`), SharePoint/OneDrive (`Files.Read*`), or directory roles without needing user passwords or MFA prompts on subsequent token refreshes.
+- **What is happening:** Instead of stealing a password, an attacker tricks a user (or admin) into clicking "Accept" on a malicious third-party cloud app. That single click hands the app an OAuth token with permission to read emails, download OneDrive/SharePoint files, or even modify directory roles—without ever needing the user's password or MFA again.
+- **Why it blends in / why alerts miss it:** Granting permissions to cloud apps looks like normal SaaS onboarding in Entra ID, and no traditional failed-login or malware alert fires because the user legitimately approved the prompt.
 
 ## Telemetry & Data Sources
 - **Platform / Schema:** Microsoft Sentinel (`AuditLogs` from Microsoft Entra ID).
-- **Prerequisites:** Microsoft Entra ID Diagnostic Settings streaming `AuditLogs` to Log Analytics / Sentinel.
+- **Prerequisites:** Microsoft Entra ID Diagnostic Settings streaming `AuditLogs` to your Log Analytics / Sentinel workspace.
 
 ## Query Logic
-1. Queries `AuditLogs` under `ApplicationManagement` for consent and permission grant operations (`Consent to application`, `Add delegated permission grant`, etc.).
-2. Extracts the initiating user UPN, IP address, target application name/ID, and `modifiedProperties`.
-3. Expands modified properties to surface granted scopes and flags any matching high-risk Microsoft Graph permissions (`Mail.ReadWrite`, `Files.ReadWrite.All`, `RoleManagement.ReadWrite.Directory`, `offline_access`).
+1. **Tunable Parameters (`let` block):** Defines the lookback window, Entra ID consent operation names, high-risk Microsoft Graph permissions, and allowlists for approved apps and admins.
+2. **Allowlist Filtering:** Filters `AuditLogs` (`ApplicationManagement`) and skips any pre-approved `AllowedAppIds` or `AllowedActors`.
+3. **Permission Parsing & Risk Flagging:** Expands `modifiedProperties` to inspect the exact permissions granted and sets `HasHighRiskScope = true` when sensitive scopes like `Mail.ReadWrite` or `Files.ReadWrite.All` appear.
+4. **Triage Output:** Summarizes who granted consent, from what IP, for which app, and floats high-risk scopes to the top.
+
+### How to Adapt This Query
+- **Reduce noise quickly:** Set `OnlyShowHighRiskScopes = true` to focus strictly on sensitive mailbox, file, and directory permissions.
+- **Allowlist known SaaS apps:** Add trusted application GUIDs to `AllowedAppIds` and identity admins to `AllowedActors`.
+- **Customize risky scopes:** Add or remove Microsoft Graph scopes inside `HighRiskPermissions` (e.g., `Calendars.Read` or `Notes.Read.All`).
 
 ## Triage & Investigation Steps
-1. Verify whether the `AppDisplayName` and `AppId` correspond to an approved enterprise SaaS integration or an unverified multi-tenant publisher.
-2. Check `ActorIP` reputation and correlate with `SigninLogs` around `ConsentTimestamp` for anomalous user-agents or impossible travel.
-3. Review Microsoft Graph/Exchange audit logs (`OfficeActivity`) for mail search, inbox rule creation, or bulk file access using the newly consented app.
+1. Verify whether `AppDisplayName` and `AppId` belong to a sanctioned company tool or an unverified external publisher.
+2. Check `ActorIP` and correlate with `SigninLogs` around `ConsentTimestamp` for unfamiliar locations, VPNs, or suspicious user-agents.
+3. Review Microsoft 365 activity (`OfficeActivity`) for inbox rule changes, mail searches, or bulk SharePoint/OneDrive downloads tied to that user or app.
 
 ## Known False Positives
-- Legitimate productivity SaaS apps approved by users when user consent is not restricted, or IT admins onboarding new Entra ID integrations.
+- Approved third-party productivity apps (calendar schedulers, CRM plugins) consented to by employees or IT admins.
 
 ## References
 - [MITRE ATT&CK T1528 - Steal Application Access Token](https://attack.mitre.org/techniques/T1528/)

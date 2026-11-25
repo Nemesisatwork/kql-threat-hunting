@@ -4,6 +4,16 @@ Hypothesis-driven KQL threat hunting queries for Microsoft Sentinel and Defender
 
 ---
 
+## Design Philosophy: Modular & Easy to Adapt
+
+Every query in this repository is built to be **readable, modular, and simple to customize**:
+
+1. **Plain-English Hypotheses:** Each hunt explains *what* the attacker is doing, *why* it matters, and *why* standard alerts often miss it—without unnecessary jargon.
+2. **Top-of-File Configuration (`let` blocks):** Time windows (`Lookback`), risk lists, and environment allowlists (`AllowedDevices`, `AllowedAccounts`, `AllowedParents`) sit cleanly at the top of every `.kql` file so you can tune them without touching the detection logic.
+3. **Clean Separation of Query & Docs:** `.kql` files contain ready-to-paste KQL; `.md` briefs contain the hypothesis, adaptation guide, triage steps, and false-positive notes.
+
+---
+
 ## Repository Structure
 
 ```text
@@ -20,12 +30,6 @@ Hypothesis-driven KQL threat hunting queries for Microsoft Sentinel and Defender
 └── initial-access/
 ```
 
-Each top-level tactic directory follows **MITRE ATT&CK Enterprise** naming (`initial-access/`, `execution/`, `persistence/`, `privilege-escalation/`, `defense-evasion/`, `credential-access/`, `discovery/`, `lateral-movement/`, `collection/`, `command-and-control/`, `exfiltration/`, `impact/`).
-
-Every hunt consists of a **paired `.kql` query + `.md` brief**:
-- `<hunt-slug>.kql` — Clean, copy-pasteable KQL query with inline `//` comments.
-- `<hunt-slug>.md` — YAML frontmatter + hypothesis, telemetry requirements, query logic, triage steps, and known false positives.
-
 ---
 
 ## Hunts Index
@@ -40,7 +44,7 @@ Every hunt consists of a **paired `.kql` query + `.md` brief**:
 ## Adding a New Hunt
 
 1. Pick or create the matching MITRE ATT&CK tactic folder (lowercase kebab-case, e.g., `credential-access/`).
-2. Create `<hunt-slug>.kql` containing only the query and `//` comments (no Markdown code fences).
+2. Create `<hunt-slug>.kql` with modular `let` parameters at the top and clean `//` section comments (no Markdown code fences).
 3. Copy [`docs/HUNT_TEMPLATE.md`](docs/HUNT_TEMPLATE.md) to `<hunt-slug>.md` in the same folder and complete all sections.
 4. Validate locally before committing:
 

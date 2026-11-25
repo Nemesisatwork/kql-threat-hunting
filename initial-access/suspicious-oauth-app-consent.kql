@@ -1,8 +1,14 @@
 // Threat Hunt: Suspicious OAuth Application Consent Grants
-// Platform: Microsoft Sentinel / Entra ID (AuditLogs)
 // MITRE ATT&CK: T1528 (Steal Application Access Token), T1550.001 (Application Access Token)
 
+// --- 1. TUNABLE PARAMETERS (Customize for your environment) ---
 let Lookback = 14d;
+let TargetOperations = dynamic([
+    "Consent to application",
+    "Add app role assignment grant to user",
+    "Add delegated permission grant",
+    "Add OAuth2PermissionGrant"
+]);
 let HighRiskPermissions = dynamic([
     "Mail.Read", "Mail.ReadWrite", "Mail.Send",
     "Files.Read.All", "Files.ReadWrite.All",
@@ -10,31 +16,42 @@ let HighRiskPermissions = dynamic([
     "Directory.ReadWrite.All", "RoleManagement.ReadWrite.Directory",
     "Application.ReadWrite.All", "offline_access"
 ]);
+let AllowedAppIds = dynamic([]);         // Approved enterprise App IDs (GUIDs)
+let AllowedActors = dynamic([]);         // Approved admin UPNs performing onboarding
+let OnlyShowHighRiskScopes = false;      // Set to true to filter strictly to HighRiskPermissions
+
+// --- 2. BASE TELEMETRY & ALLOWLIST FILTERING ---
 AuditLogs
 | where TimeGenerated >= ago(Lookback)
 | where Category =~ "ApplicationManagement"
-| where OperationName in~ (
-    "Consent to application",
-    "Add app role assignment grant to user",
-    "Add delegated permission grant",
-    "Add OAuth2PermissionGrant"
-)
+| where OperationName in~ (TargetOperations)
 | extend
     ActorUPN = tostring(InitiatedBy.user.userPrincipalName),
     ActorIP = tostring(InitiatedBy.user.ipAddress),
     AppDisplayName = tostring(TargetResources[0].displayName),
     AppId = tostring(TargetResources[0].id),
     ModifiedProps = TargetResources[0].modifiedProperties
+| where array_length(AllowedAppIds) == 0 or not(AppId in~ (AllowedAppIds))
+| where array_length(AllowedActors) == 0 or not(ActorUPN in~ (AllowedActors))
+
+// --- 3. PERMISSION PARSING & RISK FLAGGING ---
 | mv-expand Prop = ModifiedProps
 | extend
     PropName = tostring(Prop.displayName),
     NewValue = tostring(Prop.newValue)
-| where PropName in~ ("ConsentContext.IsAdminConsent", "DelegatedPermissionGrant.Scope", "ConsentAction.Permissions", "AppRoleAssignment.RoleDescription")
-    or NewValue has_any (HighRiskPermissions)
+| where PropName in~ (
+    "ConsentContext.IsAdminConsent",
+    "DelegatedPermissionGrant.Scope",
+    "ConsentAction.Permissions",
+    "AppRoleAssignment.RoleDescription"
+) or NewValue has_any (HighRiskPermissions)
 | summarize
     ConsentTimestamp = min(TimeGenerated),
     GrantedDetails = make_set(strcat(PropName, "=", NewValue), 20),
     Operations = make_set(OperationName, 10)
     by ActorUPN, ActorIP, AppDisplayName, AppId, Result
 | extend HasHighRiskScope = tostring(GrantedDetails) has_any (HighRiskPermissions)
+| where not(OnlyShowHighRiskScopes) or HasHighRiskScope
+
+// --- 4. TRIAGE OUTPUT ---
 | sort by HasHighRiskScope desc, ConsentTimestamp desc

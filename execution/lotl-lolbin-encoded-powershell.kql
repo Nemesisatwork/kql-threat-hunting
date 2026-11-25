@@ -1,25 +1,45 @@
 // Threat Hunt: LOLBin & Encoded PowerShell Execution
-// Platform: Microsoft Defender XDR (DeviceProcessEvents)
 // MITRE ATT&CK: T1059.001 (PowerShell), T1027 (Obfuscated Files or Information)
 
+// --- 1. TUNABLE PARAMETERS (Customize for your environment) ---
 let Lookback = 7d;
+let TargetBinaries = dynamic(["powershell.exe", "pwsh.exe"]);
 let SuspiciousParents = dynamic([
     "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
     "mshta.exe", "wscript.exe", "cscript.exe", "cmd.exe",
     "rundll32.exe", "regsvr32.exe", "wmiprvse.exe"
 ]);
+let DownloadKeywords = dynamic([
+    "downloadstring", "downloadfile", "invoke-webrequest",
+    "invoke-restmethod", "net.webclient", "frombase64string",
+    "iex(", "iex "
+]);
+let AllowedDevices = dynamic([]);        // e.g., ["TEST-LAB-01"]
+let AllowedAccounts = dynamic([]);       // e.g., ["svc_automation"]
+let AllowedCommandSubstrings = dynamic([]); // e.g., ["C:\\ProgramData\\IT\\ApprovedScript.ps1"]
+
+// --- 2. BASE TELEMETRY & ALLOWLIST FILTERING ---
 DeviceProcessEvents
 | where Timestamp >= ago(Lookback)
-| where FileName in~ ("powershell.exe", "pwsh.exe")
+| where FileName in~ (TargetBinaries)
+| where array_length(AllowedDevices) == 0 or not(DeviceName in~ (AllowedDevices))
+| where array_length(AllowedAccounts) == 0 or not(AccountName in~ (AllowedAccounts))
+| where array_length(AllowedCommandSubstrings) == 0 or not(ProcessCommandLine has_any (AllowedCommandSubstrings))
+
+// --- 3. BEHAVIORAL INDICATORS ---
 | extend
     CmdLower = tolower(ProcessCommandLine),
     ParentLower = tolower(InitiatingProcessFileName)
 | extend
     HasEncodedFlag = CmdLower matches regex @"(?i)(?:^|\s)[-/](?:e|ec|en|enc|enco|encod|encodedcommand)\s+[A-Za-z0-9+/=]{16,}",
     HasHiddenWindow = CmdLower matches regex @"(?i)(?:^|\s)[-/]w(?:indowstyle)?\s+hid(?:den)?\b",
-    HasDownloadCradle = CmdLower has_any ("downloadstring", "downloadfile", "invoke-webrequest", "invoke-restmethod", "net.webclient", "frombase64string", "iex(", "iex "),
+    HasDownloadCradle = CmdLower has_any (DownloadKeywords),
     HasSuspiciousParent = ParentLower in (SuspiciousParents)
-| where HasEncodedFlag or (HasHiddenWindow and HasDownloadCradle) or (HasSuspiciousParent and (HasDownloadCradle or HasHiddenWindow))
+| where HasEncodedFlag
+    or (HasHiddenWindow and HasDownloadCradle)
+    or (HasSuspiciousParent and (HasDownloadCradle or HasHiddenWindow))
+
+// --- 4. TRIAGE OUTPUT ---
 | project
     Timestamp,
     DeviceName,
