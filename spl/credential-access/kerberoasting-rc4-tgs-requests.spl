@@ -1,0 +1,24 @@
+``` --- 1. TUNABLE SCOPE & EXCLUSIONS (Customize index, exclusions, and thresholds) --- ```
+index=wineventlog sourcetype="WinEventLog:Security" EventCode=4769
+    Ticket_Encryption_Type=0x17
+    Service_Name!="*$"
+    Service_Name!="krbtgt"
+    Account_Name!="*$"
+    NOT Account_Name IN ("svc_vuln_scanner", "svc_legacy_example")
+
+``` --- 2. FIELD NORMALIZATION & TIME BUCKETING --- ```
+| eval Client_IP=replace(Client_Address, "^::ffff:", "")
+| bin _time span=10m
+
+``` --- 3. AGGREGATION & TUNABLE THRESHOLDS --- ```
+| stats
+    count AS total_tgs_requests,
+    dc(Service_Name) AS unique_spn_count,
+    values(Service_Name) AS targeted_services
+    BY _time, Account_Name, Client_IP
+| eval min_unique_spns=3, min_total_tgs=5
+| where unique_spn_count >= min_unique_spns OR total_tgs_requests >= min_total_tgs
+
+``` --- 4. TRIAGE OUTPUT --- ```
+| sort - unique_spn_count, - total_tgs_requests
+| table _time, Account_Name, Client_IP, unique_spn_count, total_tgs_requests, targeted_services

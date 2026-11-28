@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate KQL threat hunting metadata, repository structure, and query syntax."""
+"""Validate threat hunting metadata, repository structure, and query syntax."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import datetime as dt
 import re
 import sys
 from pathlib import Path
+
+PLATFORMS = {"kql", "spl", "cql"}
 
 VALID_TACTICS = {
     "reconnaissance",
@@ -48,11 +50,12 @@ REQUIRED_SECTIONS = [
     "## Hypothesis",
     "## Telemetry & Data Sources",
     "## Query Logic",
+    "### How to Adapt This Query",
     "## Triage & Investigation Steps",
     "## Known False Positives",
 ]
 
-ID_PATTERN = re.compile(r"^TH-KQL-\d{4}$")
+ID_PATTERN = re.compile(r"^TH-(KQL|SPL|CQL)-\d{4}$")
 TECHNIQUE_PATTERN = re.compile(r"^T\d{4}(\.\d{3})?$")
 
 
@@ -136,8 +139,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object] | None, str, str | N
     return data, body, None
 
 
-def strip_kql_comments_and_strings(query: str) -> tuple[str, list[str]]:
-    """Strip KQL line comments and string literals for delimiter checking."""
+def strip_comments_and_literals(query: str, platform: str) -> tuple[str, list[str]]:
+    """Strip comments, string literals, and regex literals for delimiter checking."""
     errors: list[str] = []
     out: list[str] = []
     i = 0
@@ -146,13 +149,31 @@ def strip_kql_comments_and_strings(query: str) -> tuple[str, list[str]]:
     while i < n:
         ch = query[i]
 
-        if query.startswith("//", i):
+        if platform in {"kql", "cql"} and query.startswith("//", i):
             newline = query.find("\n", i)
             i = n if newline == -1 else newline + 1
             out.append(" ")
             continue
 
-        if ch == "@" and i + 1 < n and query[i + 1] in ('"', "'"):
+        if platform == "cql" and query.startswith("/*", i):
+            end = query.find("*/", i + 2)
+            if end == -1:
+                errors.append("Unclosed '/*' block comment")
+                break
+            i = end + 2
+            out.append(" ")
+            continue
+
+        if platform == "spl" and query.startswith("```", i):
+            end = query.find("```", i + 3)
+            if end == -1:
+                errors.append("Unclosed SPL '```' comment block")
+                break
+            i = end + 3
+            out.append(" ")
+            continue
+
+        if platform == "kql" and ch == "@" and i + 1 < n and query[i + 1] in ('"', "'"):
             quote = query[i + 1]
             i += 2
             closed = False
@@ -170,7 +191,7 @@ def strip_kql_comments_and_strings(query: str) -> tuple[str, list[str]]:
             out.append(" ")
             continue
 
-        if ch in ('"', "'"):
+        if ch in ('"', "'") and (ch == '"' or platform == "kql"):
             quote = ch
             i += 1
             closed = False
@@ -187,6 +208,34 @@ def strip_kql_comments_and_strings(query: str) -> tuple[str, list[str]]:
                 errors.append(f"Unclosed string literal ({quote}...)")
             out.append(" ")
             continue
+
+        if platform == "cql" and ch == "/":
+            prev = out[-1] if out else " "
+            if prev in (" ", "=", "(", "[", ",", "!", "~", "\n", "\t"):
+                i += 1
+                closed = False
+                in_char_class = False
+                while i < n:
+                    if query[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if query[i] == "[" and not in_char_class:
+                        in_char_class = True
+                    elif query[i] == "]" and in_char_class:
+                        in_char_class = False
+                    elif query[i] == "/" and not in_char_class:
+                        i += 1
+                        while i < n and query[i].isalpha():
+                            i += 1
+                        closed = True
+                        break
+                    elif query[i] == "\n":
+                        break
+                    i += 1
+                if not closed:
+                    errors.append("Unclosed CQL regex literal (/.../)")
+                out.append(" ")
+                continue
 
         out.append(ch)
         i += 1
@@ -213,40 +262,47 @@ def check_balanced_delimiters(code: str) -> list[str]:
     return []
 
 
-def validate_query_file(query_path: Path) -> list[str]:
-    """Validate raw KQL syntax and formatting rules."""
+def validate_query_file(query_path: Path, platform: str) -> list[str]:
+    """Validate raw query syntax and formatting rules."""
     errors: list[str] = []
     content = query_path.read_text(encoding="utf-8")
 
     if not content.strip():
         return ["Query file is empty"]
 
-    if re.search(r"```", content):
-        errors.append("Query file contains a Markdown code fence; store raw KQL only")
+    if re.search(r"```(kql|spl|cql|sql|bash|text)\b", content, re.IGNORECASE):
+        errors.append("Query file contains a Markdown code fence; store raw query code only")
 
-    stripped, lex_errors = strip_kql_comments_and_strings(content)
+    if platform == "spl" and re.search(r"^\s*(//|#)", content, re.MULTILINE):
+        errors.append("SPL does not support '//' or '#' comments; use ```comment``` or document in .md")
+
+    stripped, lex_errors = strip_comments_and_literals(content, platform)
     errors.extend(lex_errors)
     errors.extend(check_balanced_delimiters(stripped))
 
     non_comment_code = stripped.strip()
     if not non_comment_code:
-        errors.append("Query file contains comments only and no executable KQL")
-    elif "|" not in non_comment_code:
+        errors.append("Query file contains comments only and no executable query")
+        return errors
+
+    if platform == "kql" and "|" not in non_comment_code:
         errors.append("KQL query should include at least one pipe operator ('|')")
+    elif platform == "cql" and "#" not in content and "|" not in non_comment_code:
+        errors.append("CQL query should reference event filters (e.g. #event_simpleName) or pipe stages")
 
     return errors
 
 
 def validate_hunt(md_path: Path, repo_root: Path, seen_ids: set[str]) -> tuple[dict[str, object] | None, list[str]]:
-    """Validate one hunt markdown file and its paired .kql file."""
+    """Validate one hunt markdown file and its paired query file."""
     errors: list[str] = []
     rel = md_path.relative_to(repo_root)
     parts = rel.parts
 
-    if len(parts) != 2:
-        return None, [f"{rel}: expected path '<tactic>/<hunt>.md'"]
+    if len(parts) != 3:
+        return None, [f"{rel}: expected path '<platform>/<tactic>/<hunt>.md'"]
 
-    dir_tactic = parts[0]
+    dir_platform, dir_tactic, _ = parts
     text = md_path.read_text(encoding="utf-8")
     fm, body, fm_err = parse_frontmatter(text)
     if fm_err or fm is None:
@@ -259,14 +315,19 @@ def validate_hunt(md_path: Path, repo_root: Path, seen_ids: set[str]) -> tuple[d
 
     hunt_id = str(fm["id"])
     if not ID_PATTERN.match(hunt_id):
-        errors.append(f"{rel}: invalid id '{hunt_id}' (expected TH-KQL-<NNNN>)")
+        errors.append(f"{rel}: invalid id '{hunt_id}' (expected TH-<KQL|SPL|CQL>-<NNNN>)")
     elif hunt_id in seen_ids:
         errors.append(f"{rel}: duplicate id '{hunt_id}'")
     else:
         seen_ids.add(hunt_id)
 
-    if str(fm["platform"]).lower() != "kql":
-        errors.append(f"{rel}: platform must be 'kql'")
+    platform = str(fm["platform"]).lower()
+    if platform not in PLATFORMS:
+        errors.append(f"{rel}: invalid platform '{platform}'")
+    elif platform != dir_platform:
+        errors.append(f"{rel}: frontmatter platform '{platform}' does not match folder '{dir_platform}'")
+    elif ID_PATTERN.match(hunt_id) and not hunt_id.startswith(f"TH-{platform.upper()}-"):
+        errors.append(f"{rel}: id '{hunt_id}' prefix does not match platform '{platform}'")
 
     tactic = str(fm["tactic"]).lower()
     if tactic not in VALID_TACTICS:
@@ -298,7 +359,7 @@ def validate_hunt(md_path: Path, repo_root: Path, seen_ids: set[str]) -> tuple[d
         errors.append(f"{rel}: 'data_sources' must be a non-empty list")
 
     query_file = str(fm["query_file"])
-    expected_query_name = f"{md_path.stem}.kql"
+    expected_query_name = f"{md_path.stem}.{dir_platform}"
     if query_file != expected_query_name:
         errors.append(f"{rel}: query_file '{query_file}' should match '{expected_query_name}'")
 
@@ -306,7 +367,7 @@ def validate_hunt(md_path: Path, repo_root: Path, seen_ids: set[str]) -> tuple[d
     if not query_path.is_file():
         errors.append(f"{rel}: paired query file '{query_file}' does not exist")
     else:
-        for q_err in validate_query_file(query_path):
+        for q_err in validate_query_file(query_path, dir_platform):
             errors.append(f"{query_path.relative_to(repo_root)}: {q_err}")
 
     for section in REQUIRED_SECTIONS:
@@ -317,7 +378,7 @@ def validate_hunt(md_path: Path, repo_root: Path, seen_ids: set[str]) -> tuple[d
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate KQL threat hunting queries and metadata.")
+    parser = argparse.ArgumentParser(description="Validate threat hunting queries and metadata.")
     parser.add_argument("--summary", action="store_true", help="Print a summary table of validated hunts.")
     args = parser.parse_args()
 
@@ -326,18 +387,28 @@ def main() -> int:
     seen_ids: set[str] = set()
     hunts: list[dict[str, object]] = []
 
-    for tactic_dir in sorted(p for p in repo_root.iterdir() if p.is_dir() and p.name in VALID_TACTICS):
-        for md_path in sorted(tactic_dir.glob("*.md")):
+    for platform in sorted(PLATFORMS):
+        platform_dir = repo_root / platform
+        if not platform_dir.is_dir():
+            continue
+
+        for md_path in sorted(platform_dir.glob("*/*.md")):
             fm, errors = validate_hunt(md_path, repo_root, seen_ids)
             all_errors.extend(errors)
             if fm and not errors:
                 hunts.append(fm)
 
-        for q_path in sorted(tactic_dir.glob("*.kql")):
+        for q_path in sorted(platform_dir.glob(f"*/*.{platform}")):
             paired_md = q_path.with_suffix(".md")
             if not paired_md.is_file():
                 all_errors.append(
                     f"{q_path.relative_to(repo_root)}: orphaned query file without matching '{paired_md.name}'"
+                )
+
+        for item in platform_dir.iterdir():
+            if item.is_file() and item.name != "README.md":
+                all_errors.append(
+                    f"{item.relative_to(repo_root)}: place hunts inside a MITRE tactic subfolder"
                 )
 
     if not hunts and not all_errors:
@@ -345,12 +416,15 @@ def main() -> int:
         return 1
 
     if args.summary and hunts:
-        print(f"Validated {len(hunts)} KQL threat hunt(s):\n")
-        print(f"{'ID':<13} {'Tactic':<20} {'Techniques':<22} {'Title'}")
-        print("-" * 82)
+        print(f"Validated {len(hunts)} threat hunt(s):\n")
+        print(f"{'ID':<13} {'Platform':<8} {'Tactic':<20} {'Techniques':<22} {'Title'}")
+        print("-" * 92)
         for hunt in sorted(hunts, key=lambda h: str(h["id"])):
             techs = ", ".join(str(t) for t in hunt["techniques"])  # type: ignore[union-attr]
-            print(f"{str(hunt['id']):<13} {str(hunt['tactic']):<20} {techs:<22} {hunt['title']}")
+            print(
+                f"{str(hunt['id']):<13} {str(hunt['platform']).upper():<8} "
+                f"{str(hunt['tactic']):<20} {techs:<22} {hunt['title']}"
+            )
         print()
 
     if all_errors:
@@ -359,7 +433,7 @@ def main() -> int:
             print(f"  - {err}", file=sys.stderr)
         return 1
 
-    print(f"SUCCESS: All {len(hunts)} KQL threat hunt(s) passed validation.")
+    print(f"SUCCESS: All {len(hunts)} threat hunt(s) passed validation.")
     return 0
 
 

@@ -1,4 +1,4 @@
-name: Validate KQL Threat Hunts
+name: Validate Threat Hunts
 
 on:
   push:
@@ -17,5 +17,5 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validate hunt metadata and KQL syntax
+      - name: Validate hunt metadata and query syntax
         run: python scripts/validate_hunts.py --summary

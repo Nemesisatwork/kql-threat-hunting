@@ -1,0 +1,32 @@
+``` --- 1. TUNABLE SCOPE & EXCLUSIONS (Customize index, EventCodes, and allowlists) --- ```
+(index=sysmon OR index=wineventlog)
+    (EventCode=1 OR EventCode=4688)
+    (Image="*\\certutil.exe" OR New_Process_Name="*\\certutil.exe")
+
+``` --- 2. FIELD NORMALIZATION (Supports both Sysmon and Windows 4688) --- ```
+| eval cmd=coalesce(CommandLine, Process_Command_Line)
+| eval proc=coalesce(Image, New_Process_Name)
+| eval parent=coalesce(ParentImage, Creator_Process_Name)
+| eval user=coalesce(User, Account_Name)
+| where NOT match(cmd, "(?i)internal-ca\.corp\.local")
+
+``` --- 3. BEHAVIORAL CLASSIFICATION --- ```
+| where match(cmd, "(?i)(-urlcache|-verifyctl|-split|-decode|-decodehex|-encode|https?://|ftp://)")
+| eval abuse_type=case(
+    match(cmd, "(?i)(https?://|ftp://|-urlcache|-verifyctl)"), "Remote Download",
+    match(cmd, "(?i)(-decode|-decodehex)"), "Payload Decode",
+    match(cmd, "(?i)-encode"), "Data Staging / Encode",
+    true(), "Other"
+)
+
+``` --- 4. AGGREGATION & TRIAGE OUTPUT --- ```
+| stats
+    count AS exec_count,
+    earliest(_time) AS first_seen,
+    latest(_time) AS last_seen,
+    values(parent) AS parent_processes,
+    values(cmd) AS command_lines
+    BY host, user, abuse_type
+| convert ctime(first_seen) ctime(last_seen)
+| sort - exec_count
+| table first_seen, last_seen, host, user, abuse_type, exec_count, parent_processes, command_lines
